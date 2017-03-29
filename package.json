@@ -4,13 +4,21 @@
   "main": "index.js",
   "license": "MIT",
   "scripts": {
-    "start": "node ."
+    "start": "node .",
+    "deploy": "now && now alias"
+  },
+  "now": {
+    "alias": [
+      "nmotw-api.now.sh"
+    ]
   },
   "dependencies": {
-    "lru-cache": "^4.0.2",
+    "isomorphic-fetch": "^2.2.1",
     "micro": "^7.2.1",
+    "moment": "^2.18.1",
     "ms": "^1.0.0",
-    "object-hash": "^1.1.7",
-    "osmosis": "^1.1.4"
+    "osmosis": "^1.1.4",
+    "p-memoize": "^1.0.0",
+    "urlencoded-body-parser": "^2.0.0"
   }
 }

@@ -1,19 +1,18 @@
 const osmosis = require('osmosis')
-const LRU = require('lru-cache')
-const objectHash = require('object-hash')
 const micro = require('micro')
 const ms = require('ms')
-
-const options = {
-  max: 500
-}
-
-const cache = LRU(options)
+const pMemoize = require('p-memoize')
+const moment = require('moment')
+const bodyParser = require('urlencoded-body-parser')
+const fetch = require('isomorphic-fetch')
+const queryString = require('querystring')
 
 const baseUrl = 'https://nmotw.in/'
 
-const fetchList = () => new Promise((resolve, reject) => {
+const fetchModules = () => new Promise((resolve, reject) => {
   console.log('fetchList Start')
+  const modules = []
+
   osmosis
     .get(baseUrl)
     .find('article')
@@ -30,24 +29,73 @@ const fetchList = () => new Promise((resolve, reject) => {
       gif: `img[src*='.gif']@src`
     })
     .error(reject)
-    .data(function (data) {
-      const hash = objectHash(data)
-      cache.set(hash, data)
+    .data(function (raw) {
+      const module = Object.assign({}, raw, {
+        date: moment(raw.date, 'YYYY MMM D').format('YYYY-MM-DD'),
+        tags: (raw.tags || []).map(tag => tag.toLowerCase())
+      })
+      modules.push(module)
     })
     .done(function () {
       console.log('fetchList Done')
-      console.log('Got', cache.length, 'items')
-      return resolve()
+      console.log('Got', modules.length, 'items')
+      const sortedModules = modules.sort((lhs, rhs) => {
+        const lhsDate = moment(lhs.date, 'YYYY-MM-DD')
+        const rhsDate = moment(rhs.date, 'YYYY-MM-DD')
+
+        if (lhsDate.isBefore(rhsDate)) return 1
+        if (rhsDate.isBefore(lhsDate)) return -1
+        return 0
+      })
+      return resolve(sortedModules)
     })
 })
 
-fetchList()
-  .then(() => {
-    console.log('first fetch done!')
-    setInterval(fetchList, ms('10m'))
-  })
+const getLatest = modules => modules.reduce((latest, current) => {
+  if (!latest) return current
+  if (moment(current.date).isAfter(latest.date)) return current
+  return latest
+})
+
+const getModules = pMemoize(fetchModules, { maxAge: ms('10m') })
+
+getModules() // init cache
+
+const humanJson = (req, data) => {
+  const acceptsJson = req.headers && req.headers['accept'] && req.headers['accept'].includes('application/json')
+  if (acceptsJson) return data
+  return JSON.stringify(data, null, 2)
+}
 
 const server = micro(async (req, res) => {
+  const isSlack = req.method === 'POST' && req.url.startsWith('/slack')
+
+  if (req.url.startsWith('/slack/oauth')) {
+    return `
+<meta charset="utf-8" />
+<style>body, html { font-family: sans-serif; }</style>
+Done! type <b>/nmotw</b> in any channel to get the module of the week 🎉
+    `
+  }
+  if (req.url === '/slack' && !isSlack) {
+    res.setHeader('Content-Type', 'text/html')
+    const query = queryString.stringify({
+      client_id: '4719412218.159200113984',
+      scope: 'commands',
+      state: 'done',
+      redirect_uri: `https://nmotw-api.now.sh/slack/oauth`
+    })
+    const redirect = `https://slack.com/oauth/authorize?${query}`
+    return `
+<style>body, html { font-family: sans-serif; }</style>
+<meta charset="utf-8" />
+<div>
+  <h3>📦 Node module of the week slash command (/nmotw)</h3>
+  <a href='${redirect}'>💬 Add to slack</a>
+</div>
+    `
+  }
+
   if (req.url.startsWith('/images')) {
     res.statusCode = 302
     res.setHeader('Location', `${baseUrl}${req.url}`)
@@ -55,14 +103,81 @@ const server = micro(async (req, res) => {
     return
   }
 
-  if (cache.length === 0) {
+  const modules = await getModules()
+
+  if (modules.length === 0) {
     return micro.send(res, 500, 'Cache not ready.')
   }
-  const acceptsJson = req.headers && req.headers['accept'] && req.headers['accept'].includes('application/json')
-  const all = cache.values()
 
-  if (acceptsJson) return all
-  return JSON.stringify(all, null, 2)
+  if (isSlack) {
+    const { response_url: responseUrl } = await bodyParser(req)
+    const module = await getLatest(modules)
+    console.log(responseUrl)
+
+    const message = {
+      response_type: 'in_channel',
+      attachments: [{
+        fallback: module.name,
+        color: '#36a64f',
+        author_name: `Module of the week (${moment(module.date, 'YYYY-MM-DD').format('W')})`,
+        title: module.name,
+        text: module.description,
+        title_link: `https://npmjs.org/package/${module.name}`,
+        image_url: `${process.env.NOW_URL}${module.gif}`,
+        footer: `https://npmjs.org/package/${module.name}`
+      }]
+    }
+
+    setTimeout(() => {
+      fetch(responseUrl, {
+        method: 'post',
+        headers: {
+          'Content-type': 'application/json'
+        },
+        body: JSON.stringify(message)
+      })
+    }, 5000)
+
+    return 'Loading!'
+    // return `Module of the week is **${latest.name}** (${latest.tags.join(', ')})\n${latest.description}\nhttps://npmjs.org/package/${latest.name}`
+  }
+
+  if (req.url.startsWith('/latest')) {
+    const latest = getLatest(modules)
+
+    return humanJson(req, latest)
+  }
+
+  if (req.url.startsWith('/tags')) {
+    const allTags = modules
+      .map(module => module.tags)
+      .filter(Boolean)
+      .reduce((all, current) => {
+        return [...all, ...current]
+      }, [])
+
+    const uniqueTags = new Set(allTags)
+
+    const tags = [...uniqueTags]
+
+    return humanJson(req, tags)
+  }
+
+  if (req.url.startsWith('/tag/')) {
+    const paths = req.url.split('/')
+    const tag = paths[paths.length - 1]
+
+    const results = modules
+      .filter(module => module.tags && module.tags.includes(tag))
+
+    if (results.length === 0) {
+      return micro.send(res, 404, `No modules with tag "${tag}" found.`)
+    }
+
+    return humanJson(req, results)
+  }
+
+  return humanJson(req, modules)
 })
 
 server.listen(3000, () => console.log('http://localhost:3000'))
