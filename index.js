@@ -91,8 +91,13 @@ Done! type <b>/nmotw</b> in any channel to get the module of the week 🎉
 <meta charset="utf-8" />
 <div>
   <h3>📦 Node module of the week slash command (/nmotw)</h3>
+  <br />
   <a href='${redirect}'>💬 Add to slack</a>
-  <a href='https://github.com/albinekb/nmotw-api'>📦 Github</a>
+  <br />
+  <a href='https://github.com/albinekb/nmotw-api'>🗜 Github</a>
+  <br />
+  <br />
+  <img src='https://cloud.githubusercontent.com/assets/5027156/24454870/d1a27cde-148d-11e7-89fc-0f44130b01b5.png' />
 </div>
     `
   }
